@@ -1,0 +1,107 @@
+rules_version = '2';
+
+// Firestore rules
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+    
+    function hasNotVoted() {
+      return !exists(/databases/$(database)/documents/voters/$(request.auth.uid)) ||
+        !get(/databases/$(database)/documents/voters/$(request.auth.uid)).data.hasVoted;
+    }
+    
+    // Voters collection
+    match /voters/{userId} {
+      // Voters can read their own data
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      // Only admins can create voters
+      allow create: if isAdmin();
+      // Voters can update their own voting status once
+      allow update: if isAuthenticated() && 
+        request.auth.uid == userId && 
+        hasNotVoted() &&
+        request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['hasVoted', 'votedFor', 'votedAt']);
+    }
+    
+    // Parties collection
+    match /parties/{partyId} {
+      // Anyone can read parties
+      allow read: if true;
+      // Only admins can modify parties
+      allow write: if isAdmin();
+    }
+    
+    // Admins collection
+    match /admins/{adminId} {
+      // Only admins can read admin list
+      allow read: if isAdmin();
+      // Only super admins can modify admin list
+      allow write: if isAdmin() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)/roles/super_admin);
+    }
+    
+    // Votes collection (for analytics)
+    match /votes/{voteId} {
+      // Only admins can read all votes
+      allow read: if isAdmin();
+      // Voters can create their own vote once
+      allow create: if isAuthenticated() && 
+        hasNotVoted() && 
+        request.resource.data.voterId == request.auth.uid;
+      // No one can modify or delete votes
+      allow update, delete: if false;
+    }
+  }
+}
+
+// Storage rules
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+    
+    function isImage() {
+      return request.resource.contentType.matches('image/.*');
+    }
+    
+    // Voter faces folder
+    match /voter_faces/{fileName} {
+      // Only admins can write voter faces
+      allow write: if isAdmin() && isImage();
+      // Admins and the voter themselves can read their face image
+      allow read: if isAuthenticated() && 
+        (request.auth.uid == fileName.split('_')[0] || isAdmin());
+    }
+    
+    // ID scans folder
+    match /id_scans/{fileName} {
+      // Only admins can write ID scans
+      allow write: if isAdmin() && isImage();
+      // Only admins can read ID scans
+      allow read: if isAdmin();
+    }
+    
+    // Party logos folder
+    match /party_logos/{fileName} {
+      // Anyone can read party logos
+      allow read: if true;
+      // Only admins can modify party logos
+      allow write: if isAdmin() && isImage();
+    }
+  }
+}
